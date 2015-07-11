@@ -108,6 +108,7 @@ informative:
   RFC5116:
   RFC5246:
   RFC5705:
+  RFC5746:
   RFC5763:
   RFC5929:
   RFC6176:
@@ -308,6 +309,11 @@ server: The endpoint which did not initiate the TLS connection.
 
 
 ##  Major Differences from TLS 1.2
+
+
+draft-10
+
+- Add explicit fatal alert expectations for many error cases.
 
 
 draft-09
@@ -1390,8 +1396,9 @@ certificate_unknown
   certificate, rendering it unacceptable.
 
 illegal_parameter
-: A field in the handshake was out of range or inconsistent with
-  other fields.  This alert is always fatal.
+: A field in the handshake was out of range, inconsistent with
+  other fields, duplicated, prohibited, or was otherwise detected
+  as invalid. This alert is always fatal.
 
 unknown_ca
 : A valid certificate chain or partial chain was received, but the
@@ -1617,10 +1624,21 @@ Finished
   and providing key confirmation. [{{server-finished}}]
 {:br }
 
-At this point, the handshake is complete, and the client and server may exchange
+At this point, the handshake is complete and the client and server may exchange
 application layer data. Application data MUST NOT be sent prior to sending the
 Finished message. If client authentication is requested, the server MUST NOT
 send application data before it receives the client's Finished.
+
+If an endpoint receives an application data message prior to handshake completion,
+then it MUST send an "unexpected_message" alert and close the connection.
+
+If either endpoint aborts the handshake process before completion, the aborting
+endpoint MUST send a relevant fatal error alert message ({{error-alerts}}) to its
+peer before closing the connection (unless otherwise specified). If a specific
+alert is not explicitly specified, then the implementation MAY select an alert
+to send based on its definition in this document. If none of the other alerts
+are applicable, then the implementation MUST default to use of a fatal
+"handshake_failure" alert.
 
 [[TODO: Move this elsewhere?
 Note that higher layers should not be overly reliant on whether TLS always
@@ -1934,7 +1952,11 @@ block. The presence of extensions can be detected by determining whether there
 are bytes following the compression_methods at the end of the ClientHello. Note
 that this method of detecting optional data differs from the normal TLS method
 of having a variable-length field, but it is used for compatibility with TLS
-before extensions were defined.
+before extensions were defined. All clients compatible with this specification
+will send at least one extension (e.g. "supported_groups" &
+"signature_algorithms" or at least "pre_shared_key" for plain PSK). All TLS
+servers MUST be able to properly handle valid ClientHello messages sent from
+any prior version of TLS, even if only to reject.
 
 client_version
 : The version of the TLS protocol by which the client wishes to
@@ -1942,6 +1964,9 @@ client_version
   (highest valued) version supported by the client.  For this
   version of the specification, the version will be { 3, 4 }. (See
   {{backward-compatibility}} for details about backward compatibility.)
+  Servers supporting no version of TLS newer than this specification
+  MUST attempt to offer a ServerHello for this version in response
+  to a ClientHello with any higher version number.
 
 random
 : A client-generated random structure.
@@ -1995,6 +2020,8 @@ When this message will be sent:
 it was able to find an acceptable set of algorithms and the client's
 ClientKeyShare extension was acceptable. If the client proposed groups are not
 acceptable by the server, it will respond with a "handshake_failure" fatal alert.
+If a client receives a ServerHello at any other time, it MUST send
+a fatal "unexpected_message" alert and close the connection.
 
 Structure of this message:
 
@@ -2031,13 +2058,15 @@ cipher_suite
   [[TODO: interaction with PSK.]]
 
 extensions
-: A list of extensions.  Note that only extensions offered by the
-  client can appear in the server's list. In TLS 1.3 as opposed to
-  previous versions of TLS, the server's extensions are split between
-  the ServerHello and the EncryptedExtensions {{encrypted-extensions}}
-  message. The ServerHello
-  MUST only include extensions which are required to establish
-  the cryptographic context.
+: A list of extensions. Note that only extensions offered by the
+  client can appear in the server's list. If a client receives an
+  extension type that it did not request in its ClientHello, it
+  MUST abort the handshake with an "unsupported_extension" fatal
+  alert. Note that in TLS 1.3, as opposed to previous versions of
+  TLS, the server's extensions are split between the ServerHello
+  and the EncryptedExtensions message {{encrypted-extensions}}.
+  The ServerHello MUST only include extensions which are required
+  to establish the cryptographic context.
 {:br }
 
 ####  Hello Retry Request
@@ -2076,19 +2105,21 @@ Upon receipt of a HelloRetryRequest, the client MUST first verify
 that the "selected_group" field does not identify a group which
 was not in the original ClientHello. If it was present, then
 the client MUST abort the handshake with a fatal "handshake_failure"
-alert. Clients SHOULD also abort with "handshake_failure" in response to any second
-HelloRetryRequest which was sent in the same connection (i.e.,
-where the ClientHello was itself in response to a HelloRetryRequest).
+alert. Clients SHOULD also abort with "handshake_failure" in response
+to a second HelloRetryRequest which was sent in the same connection
+(i.e., where the ClientHello was itself in response to a
+HelloRetryRequest).
 
 Otherwise, the client MUST send a ClientHello with a new
-ClientKeyShare extension to the server. The ClientKeyShare MUST append
-a new ClientKeyShareOffer which is consistent with the
+ClientKeyShare extension to the server. The ClientKeyShare MUST
+append a new ClientKeyShareOffer which is consistent with the
 "selected_group" field to the groups in the original ClientKeyShare.
 
-Upon re-sending the ClientHello and receiving the
-server's ServerHello/ServerKeyShare, the client MUST verify that
-the selected CipherSuite and NamedGroup match that supplied in
-the HelloRetryRequest.
+Upon re-sending the ClientHello and receiving the server's ServerHello
+and ServerKeyShare, the client MUST verify that the selected CipherSuite
+and NamedGroup match that supplied in the HelloRetryRequest. The client
+MUST abort the handshake with "handshake_failure" if the selected values
+don't match the HelloRetryRequest.
 
 ###  Hello Extensions
 
@@ -2135,7 +2166,10 @@ taking the client up on its offer.
 
 When multiple extensions of different types are present in the ClientHello or
 ServerHello messages, the extensions MAY appear in any order. There MUST NOT be
-more than one extension of the same type.
+more than one extension of the same type. Endpoints receiving any hello message
+with more than one extension of the same type MUST abort the handshake with an
+"illegal_parameter" fatal alert (regardless of if the endpoint supports the
+repeated extension).
 
 Finally, note that extensions can be sent both when starting a new session and
 when requesting session resumption or 0-RTT mode. Indeed, a client that requests session
@@ -2344,7 +2378,20 @@ ffdhe2048, etc.
 {:br }
 
 Items in named_curve_list are ordered according to the client's
-preferences (most preferred choice first).
+preferences (most preferred choice first). Servers SHOULD avoid negotiation
+of groups for key exchange that have an estimated security level
+significantly higher or lower than that of the negotiated symmetric
+bulk cipher key size. The RECOMMENDED groups are as follows:
+
+  * 128-bit level:
+    secp256r1, ffdhe3072, ffdhe4096
+
+  * 192/256-bit level:
+    secp384r1, secp521r1, ffdhe8192
+
+The estimated symmetric-equivalent strength of ffdhe2048 is only 103-bit,
+and thus MUST NOT be negotiated for TLS 1.3 or later, however it MAY
+be offered for use with prior TLS versions supporting this extension.
 
 As an example, a client that only supports secp256r1 (aka NIST P-256;
 value 23 = 0x0017) and secp384r1 (aka NIST P-384; value 24 = 0x0018)
@@ -2421,9 +2468,12 @@ values, each representing a single set of key exchange parameters;
 for instance a client might offer shares for several elliptic curves
 or multiple integer DH groups. The shares for each ClientKeyShareOffer
 MUST by generated independently. Clients MUST NOT offer multiple
-ClientKeyShareOffers for the same parameters. It is explicitly
-permitted to send an empty "client_key_share" extension as this is used
-to elicit the server's parameters if the client has no useful
+ClientKeyShareOffers for the same parameters. Servers receiving duplicate
+ClientKeyShareOffers SHOULD respond with an "illegal_parameter" alert
+and close the connection.
+
+It is explicitly permitted to send an empty "client_key_share" extension as
+this is used to elicit the server's parameters if the client has no useful
 information.
 
 [[TODO: Recommendation about what the client offers.
@@ -2472,6 +2522,7 @@ if we have new curves that don't need point compression. This depends
 on the CFRG's recommendations. The expectation is that future curves will
 come with defined point formats and that existing curves conform to
 X9.62.]]
+
 
 
 #### Pre-Shared Key Extension
@@ -2834,8 +2885,9 @@ The following rules apply to the certificates sent by the server:
 ~~~~
 
 - The "server_name" and "trusted_ca_keys" extensions {{RFC6066}} are used to
-  guide certificate selection. As servers MAY require the presence of the server_name
-  extension, clients SHOULD send this extension.
+  guide certificate selection. As servers MAY require the presence of the
+  "server_name" extension, clients MUST send this extension when applicable
+  to the current application protocol. (see {{mti-extensions}})
 
 All certificates provided by the server MUST be signed by a
 hash/signature algorithm pair that appears in the "signature_algorithms"
@@ -3846,11 +3898,11 @@ TLS protocol issues:
 -  Do you ignore the TLS record layer version number in all TLS
   records? (see {{backward-compatibility}})
 
--  Have you ensured that all support for SSL, RC4, EXPORT ciphers, and
-  MD5 (via the Signature Algorithms extension) is completely removed from
-  all possible configurations that support TLS 1.3 or later, and that
-  attempts to use these obsolete capabilities fail correctly?
-  (see {{backward-compatibility}})
+-  Have you ensured that all support for SSL, RC4, EXPORT ciphers, MD5
+  hashes (via the Signature Algorithms extension), and obsolete curves
+  ({{negotiated-groups}}) have been completely removed from all possible
+  configurations that support TLS 1.3 or later, and that attempts to use
+  these obsolete capabilities fail correctly? (see {{backward-compatibility}})
 
 -  Do you handle TLS extensions in ClientHello correctly, including
   omitting the extensions field completely?
@@ -3935,7 +3987,7 @@ TLS extensions or versions which it is not aware of. Interoperability
 with buggy servers is a complex topic beyond the scope of this document.
 Multiple connection attempts may be required in order to negotiate
 a backwards compatible connection, however this practice is vulnerable
-to downgrade attacks and is NOT RECOMMENDED.
+to downgrade attacks and is NOT RECOMMENDED. (see also [RFC7507])
 
 
 ## Negotiating with an older client
@@ -3966,15 +4018,26 @@ for any version of TLS for any reason.
 
 Old versions of TLS permitted the use of very low strength ciphers.
 Ciphers with a strength less than 112 bits MUST NOT be offered or
-negotiated for any version of TLS for any reason.
+negotiated for any version of TLS for any reason. Implementations
+detecting any cipher suite meeting this criteria in any hello message
+also offering support for TLS 1.3 or later MUST respond with an
+"illegal_parameter" alert message and close the connection.
+Implementations MAY apply this restriction to all hello messages
+from any version to avoid attempted negotiation with obsolete and
+potentially unsafe clients.
 
 The security of SSL 2.0 {{SSL2}} is considered insufficient for the reasons enumerated
 in [RFC6176], and MUST NOT be negotiated for any reason.
 
 Implementations MUST NOT send an SSL version 2.0 compatible CLIENT-HELLO.
-Implementations MUST NOT negotiate TLS 1.3 or later using an SSL version 2.0 compatible
-CLIENT-HELLO. Implementations are NOT RECOMMENDED to accept an SSL version 2.0 compatible
-CLIENT-HELLO in order to negotiate older versions of TLS.
+Implementations MUST NOT negotiate TLS 1.3 or later using an SSL version 2.0
+compatible CLIENT-HELLO. Servers capable of processing this hello message and
+receive one offering support for TLS 1.3 or later MUST respond with a
+"protocol_version" alert message and close the connection. Implementations
+are NOT RECOMMENDED to accept an SSL version 2.0 compatible CLIENT-HELLO in
+order to negotiate older versions of TLS. Implementations receiving any
+connection attempt that it cannot successfully parse as a TLS ClientHello MAY
+respond with a "decode_error" alert message before closing the connection.
 
 Implementations MUST NOT send or accept any records with a version less than { 3, 0 }.
 
@@ -3989,6 +4052,14 @@ with a "protocol_version" alert message and close the connection.
 Implementations MUST NOT use the Truncated HMAC extension, defined in
 Section 7 of [RFC6066], as it is not applicable to AEAD ciphers and has
 been shown to be insecure in some scenarios.
+
+Any implementations that allow handshake renegotiation in prior
+versions of TLS MUST implement the "renegotiation_info" extension {{RFC5746}}.
+When negotiating TLS 1.2 or prior, endpoints MUST support and use the
+"renegotiation_info" extension or refuse all renegotiation attempts.
+
+Clients only willing to negotiate TLS 1.3 or later MUST NOT send the
+"renegotiation_info" extension or SessionTicket extension {{RFC5077}}.
 
 
 #  Security Analysis
