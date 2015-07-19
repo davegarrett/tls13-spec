@@ -2023,11 +2023,12 @@ The extension format is:
 
        enum {
            signature_algorithms(13),
+           session_ticket_request(35),
            early_data(TBD),
            supported_groups(TBD),
            known_configuration(TBD),
-           pre_shared_key(TBD)
-           client_key_shares(TBD)
+           pre_shared_key(TBD),
+           client_key_shares(TBD),
            (65535)
        } ExtensionType;
 
@@ -2412,6 +2413,41 @@ message unless the ServerConfiguration message is also sent.
 When the "known_configuration" data extension is in use, the handshake hash
 is extended to include the server's configuration data and certificate
 (see {{the-handshake-hash}}) so as to tightly bind them together.
+
+
+#### Session Ticket Request Extension
+
+The "session_ticket_request" extension allows clients to request a session
+ticket from the server in order to resume this session via a PSK cipher
+as described in {{resumption-and-psk}}. The ticket identifier provided by
+the server will be used as the PSK identity for resumption.
+
+Clients MAY include this extension with zero-length "extension_data" to
+request a session ticket from the server. Servers not receiving this
+extension MUST NOT create a session ticket for this connection or add
+the connection to any session cache. Additionally, both endpoints SHOULD
+discard all keys and shared secrets as soon as they are no longer needed.
+If the server generates a session ticket for the client, it will be
+included in a NewSessionTicket message after completion of the handshake,
+before transmission of application data.
+(see {{new-session-ticket-message}})
+A client receiving a NewSessionTicket message that did not explicitly
+request one via this extension SHOULD respond with an "unexpected_message"
+alert and close the connection.
+
+The semantics of requesting a session ticket for this specification are
+the same as in {{RFC5077}}, however note that the sending of a payload
+for this extension is deprecated and only has meaning for resumption
+with prior versions of TLS. Clients MUST NOT send this extension to a
+TLS 1.3 or later server with non-zero-length "extension_data". The
+replacement for this capability in this version of TLS is the
+"pre_shared_key" extension defined in {{pre-shared-key-extension}}.
+
+Prior specifications of this extension did not provide a name to its
+ExtensionType value, instead referencing it by full extension name as
+"the SessionTicket extension". As of this specification, this value
+will be referred to as "session_ticket_request", using the previously
+assigned extension number of 35.
 
 
 #### Pre-Shared Key Extension
@@ -3094,12 +3130,14 @@ be used with DSA.
 ### New Session Ticket Message
 
 After the server has received the client Finished message, it MAY send
-a NewSessionTicket message. This message MUST be sent before the server
-sends any application data traffic, and is encrypted under the application
-traffic key. This message creates a pre-shared key
-(PSK) binding between the resumption master secret and the ticket
-label. The client MAY use this PSK for future handshakes by including
-it in the "pre_shared_key" extension in its ClientHello
+a NewSessionTicket message. This message MUST NOT be sent unless the
+client has requested a session ticket via the "session_ticket_request"
+extension ({{session-ticket-request-extension}}). This message MUST be
+sent before the server sends any application data traffic, and is
+encrypted under the application traffic key. This message creates a
+pre-shared key (PSK) binding between the resumption master secret and
+the ticket label. The client MAY use this PSK for future handshakes by
+including it in the "pre_shared_key" extension in its ClientHello
 ({{pre-shared-key-extension}}) and supplying a suitable PSK cipher
 suite.
 
