@@ -313,7 +313,8 @@ server: The endpoint which did not initiate the TLS connection.
 
 draft-10
 
-- Add explicit fatal alert expectations for many error cases.
+- Add explicit fatal alert expectations for many error cases,
+  including some new handshake fatal alert values.
 
 
 draft-09
@@ -1258,6 +1259,9 @@ as specified by the current connection state.
            export_restriction_RESERVED(60),      /* fatal */
            protocol_version(70),                 /* fatal */
            insufficient_security(71),            /* fatal */
+           unsupported_cipher_suites(72),        /* fatal */
+           unsupported_groups(73),               /* fatal */
+           client_authentication_failure(74),    /* fatal */
            internal_error(80),                   /* fatal */
            inappropriate_fallback(86),           /* fatal */
            user_canceled(90),
@@ -1373,10 +1377,10 @@ record_overflow
   network).
 
 handshake_failure
-: Reception of a "handshake_failure" alert message indicates that the
-  sender was unable to negotiate an acceptable set of security
-  parameters given the options available.
-  This alert is always fatal.
+: This alert indicates that the sender was unable to negotiate an
+  acceptable set of security parameters given the options available.
+  Many failure cases have specialized alerts that are more
+  appropriate to use in those instances. This alert is always fatal.
 
 bad_certificate
 : A certificate was corrupt, contained signatures that did not
@@ -1431,9 +1435,30 @@ protocol_version
 
 insufficient_security
 : Returned instead of "handshake_failure" when a negotiation has
-  failed specifically because the server requires ciphers more
-  secure than those supported by the client.  This alert is always
-  fatal.
+  failed specifically because the endpoint requires ciphers more
+  secure than those supported by its peer. If the cipher is just
+  not supported, use "unsupported_cipher_suites" instead. This
+  alert is always fatal.
+
+unsupported_cipher_suites
+: Returned instead of "handshake_failure" when a negotiation has
+  failed specifically because an endpoint requires ciphers not
+  supported by its peer. If the cipher is unsupported because it
+  is considered insecure, use "insufficient_security" instead.
+  This alert is always fatal.
+[[TODO: IANA Considerations: new value]]
+
+unsupported_groups
+: Returned instead of "handshake_failure" when a negotiation has
+  failed specifically because an endpoint requires groups not
+  supported by its peer. This alert is always fatal.
+[[TODO: IANA Considerations: new value]]
+
+client_authentication_failure
+: Returned instead of "handshake_failure" when a negotiation has
+  failed specifically because client authentication requested by
+  a server was considered unacceptable. This alert is always fatal.
+[[TODO: IANA Considerations: new value]]
 
 internal_error
 : An internal error unrelated to the peer or the correctness of the
@@ -1448,7 +1473,7 @@ missing_extension
 : Sent by endpoints that receive a hello message not containing an
   extension that is mandatory to send for the offered TLS version.
   This message is always fatal.
-[[TODO: IANA Considerations.]]
+[[TODO: IANA Considerations: new value]]
 
 unsupported_extension
 : Sent by endpoints receiving any hello message containing an extension
@@ -1477,9 +1502,9 @@ bad_certificate_hash_value
   [RFC6066]. This alert is always fatal.
 
 unknown_psk_identity
-: Sent by servers when a PSK cipher suite is selected but no
- acceptable PSK identity is provided by the client. Sending this alert
- is OPTIONAL; servers MAY instead choose to send a "decrypt_error"
+: Sent by endpoints when a PSK cipher suite is selected but no
+ acceptable PSK identity is provided by its peer. Sending this alert
+ is OPTIONAL; endpoints MAY instead choose to send a "decrypt_error"
  alert to merely indicate an invalid PSK identity.
  [[TODO: This doesn't really make sense with the current PSK
  negotiation scheme where the client provides multiple PSKs in
@@ -1700,8 +1725,7 @@ the same ClientHello (as is currently done) and then checking you get
 the same negotiated parameters.]]
 
 If no common cryptographic parameters can be negotiated, the server
-will send a "handshake_failure" or "insufficient_security" fatal alert
-(see {{alert-protocol}}).
+will send a fatal alert (see {{alert-protocol}}).
 
 TLS also allows several optimized variants of the basic handshake, as
 described below.
@@ -1928,10 +1952,11 @@ message, contains the combinations of cryptographic algorithms supported by the
 client in order of the client's preference (favorite choice first). Each cipher
 suite defines a key exchange algorithm, a record protection algorithm (including
 secret key length) and a hash to be used with HKDF. The server will select a cipher
-suite or, if no acceptable choices are presented, return a "handshake_failure"
-alert and close the connection. If the list contains cipher suites the server
-does not recognize, support, or wish to use, the server MUST ignore those
-cipher suites, and process the remaining ones as usual.
+suite or, if no acceptable choices are presented, MUST return an
+"insufficient_security" or "unsupported_cipher_suites" alert and close the
+connection. If the list contains cipher suites the server does not recognize,
+support, or wish to use, the server MUST ignore those cipher suites, and
+process the remaining ones as usual.
 
 %%% Hello Messages
        uint8 CipherSuite[2];    /* Cryptographic suite selector */
@@ -2018,8 +2043,9 @@ When this message will be sent:
 
 > The server will send this message in response to a ClientHello message when
 it was able to find an acceptable set of algorithms and the client's
-ClientKeyShare extension was acceptable. If the client proposed groups are not
-acceptable by the server, it will respond with a "handshake_failure" fatal alert.
+ClientKeyShare extension was acceptable. If the client proposed cipher
+suites are not acceptable by the server, it MUST respond with an
+"insufficient_security" or "unsupported_cipher_suites" fatal alert.
 If a client receives a ServerHello at any other time, it MUST send
 a fatal "unexpected_message" alert and close the connection.
 
@@ -2073,12 +2099,13 @@ extensions
 
 When this message will be sent:
 
-> Servers send this message in response to a ClientHello
-message when it was able to find an acceptable set of algorithms and
-groups that are mutually supported, but
-the client's ClientKeyShare did not contain an acceptable
-offer. If it cannot find such a match, it will respond with a
-"handshake_failure" alert.
+> Servers send this message in response to a ClientHello message
+when it was able to find an acceptable set of algorithms and
+groups that are mutually supported, but the client's
+ClientKeyShare did not contain an acceptable offer. If it cannot
+find such a match, it will instead respond with an
+"unsupported_cipher_suites" or "unsupported_groups" fatal
+alert.
 
 Structure of this message:
 
@@ -2103,12 +2130,15 @@ generate a correct ClientHello pair.
 
 Upon receipt of a HelloRetryRequest, the client MUST first verify
 that the "selected_group" field does not identify a group which
-was not in the original ClientHello. If it was present, then
-the client MUST abort the handshake with a fatal "handshake_failure"
-alert. Clients SHOULD also abort with "handshake_failure" in response
-to a second HelloRetryRequest which was sent in the same connection
-(i.e., where the ClientHello was itself in response to a
-HelloRetryRequest).
+was not in the original ClientHello. If the group was not first
+offered in the ClientHello, then the client MUST abort the handshake
+with a fatal "unsupported_groups" alert. If the group was
+offered and was also included in the client's ClientKeyShare
+then the client MUST abort the handshake with a fatal
+"handshake_failure" alert. Clients SHOULD also abort with
+"unexpected_message" in response to a second HelloRetryRequest
+which was sent in the same connection (i.e., where the ClientHello
+was itself in response to a HelloRetryRequest).
 
 Otherwise, the client MUST send a ClientHello with a new
 ClientKeyShare extension to the server. The ClientKeyShare MUST
@@ -2998,8 +3028,8 @@ supported_signature_algorithms.  The following rules apply:
 New ClientCertificateType values are assigned by IANA as described in
 {{iana-considerations}}.
 
-Note: It is a fatal "handshake_failure" alert for an anonymous server to request
-client authentication.
+Note: It is a fatal "client_authentication_failure" alert for an
+anonymous server to request client authentication.
 
 
 ###  Server Configuration
@@ -3185,16 +3215,15 @@ messages and the Finished message are omitted from handshake hashes.
 
 When this message will be sent:
 
-> This message is the first handshake message the client can send
-after receiving the server's Finished. This message is only sent if the server requests a
-certificate. If no suitable certificate is available, the client MUST send a
-certificate message containing no certificates. That is, the certificate_list
-structure has a length of zero. If the client does not send any certificates,
-the server MAY at its discretion either continue the handshake without client
-authentication, or respond with a fatal "handshake_failure" alert. Also, if some
-aspect of the certificate chain was unacceptable (e.g., it was not signed by a
-known, trusted CA), the server MAY at its discretion either continue the
-handshake (considering the client unauthenticated) or send a fatal alert.
+> This message is the first handshake message the client can send after
+receiving the server's Finished. This message is only sent if the server
+requests a certificate. If no suitable certificate is available, the client
+MUST send a certificate message containing no certificates. That is, the
+certificate_list structure has a length of zero. If the client does not send
+any certificates, or some aspect of the certificate chain is unacceptable
+(e.g. not signed by a trusted CA), then the server MAY at its discretion
+either continue the handshake without client authentication, or respond with
+a fatal "client_authentication_failure" alert and close the connection.
 
 > Client certificates are sent using the Certificate structure defined in
 {{server-certificate}}.
