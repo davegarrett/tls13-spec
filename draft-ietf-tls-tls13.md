@@ -344,6 +344,9 @@ draft-11
 - Remove early_handshake content type. Terminate 0-RTT data with
   an alert.
 
+- Require (EC)DHE with RSA cipher suites when negotiating old
+  versions in order to avoid cross-version attack.
+
 
 draft-10
 
@@ -4243,6 +4246,22 @@ suites also supported by TLS 1.3 SHOULD be preferred, if available.
 The security of RC4 cipher suites is considered insufficient for the reasons
 cited in {{RFC7465}}. Implementations MUST NOT offer or negotiate RC4 cipher suites
 for any version of TLS for any reason.
+
+Implementations MUST NOT offer or negotiate plain RSA key exchange cipher suites
+for any version of TLS for any reason.
+Implementations instead MUST use DHE or ECDHE when using RSA cipher suites.
+Any use of plain RSA key exchange opens up risk of cross-protocol attack.
+Note that this does explicitly prohibit the use of the mandatory to implement
+cipher suites for TLS 1.1 and TLS 1.2, however the TLS 1.0 MTI is still
+permitted with TLS 1.0 or TLS 1.1, if supported.
+Implementations that wish to negotiate TLS 1.0 or TLS 1.1 SHOULD support the
+TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA cipher suite for backwards compatibility.
+(note that there is a SHA256 variation of this cipher suite, however this has
+far wider support among implementations not supporting TLS 1.2 with AEAD ciphers)
+Indefinite backwards compatibility is, however, NOT RECOMMENDED; servers are
+RECOMMENDED to only support TLS 1.2 and later with (EC)DHE AEAD cipher suites,
+and are encouraged to disable support for obsolete capabilities as soon as is
+viable.
 
 Old versions of TLS permitted the use of very low strength ciphers.
 Ciphers with a strength less than 112 bits MUST NOT be offered or
