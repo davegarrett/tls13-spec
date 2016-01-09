@@ -326,6 +326,12 @@ server: The endpoint which did not initiate the TLS connection.
 
 ##  Major Differences from TLS 1.2
 
+draft-12
+
+- Prohibit use of deprecated hashes with TLS 1.3 signatures.
+  (MD5, SHA-1, & SHA-224)
+
+
 draft-11
 
 - Port the CFRG curves & signatures work from RFC4492bis.
@@ -345,6 +351,7 @@ draft-11
   an alert.
 
 - Reset sequence number upon key change (as proposed by Fournet et al.)
+
 
 draft-10
 
@@ -2366,14 +2373,14 @@ hash
   signature algorithms which do not require hashing before signing,
   such as EdDSA.
 
-  Previous versions of TLS
-  supported MD5, SHA-1, and SHA-224.  These algorithms are now deprecated.
-  MD5 and SHA-224 MUST NOT be offered by TLS 1.3 implementations; SHA-1 SHOULD
-  NOT be offered.
-
-  Clients MAY offer support for SHA-1 for backwards compatibility,
-  either with TLS 1.2 servers or for servers that have certification
-  paths with signatures based on SHA-1.
+  Previous versions of TLS supported MD5, SHA-1, and SHA-224.
+  These algorithms are now deprecated.
+  Implementations supporting TLS 1.3 MUST NOT offer or negotiate
+  MD5 or SHA-224 for any TLS version for any reason.
+  Implementations MUST NOT negotiate use of SHA-1 with TLS 1.3 or later.
+  Implementations SHOULD NOT offer or negotiate SHA-1 with TLS 1.2,
+  however clients MAY offer support for SHA-1 for compatibility with
+  old TLS 1.2 servers.
 
 signature
 : This field indicates the signature algorithm that may be used.
@@ -2393,17 +2400,20 @@ suite indicates permissible signature algorithms but not hash algorithms.
 {{server-certificate-selection}} and {{key-share}} describe the
 appropriate rules.
 
-Clients offering support for SHA-1 for backwards compatibility MUST do so by listing
+Clients offering support for SHA-1 for old TLS 1.2 servers MUST do so by listing
 those hash/signature pairs as the lowest priority (listed after all other
-pairs in the supported_signature_algorithms vector). TLS 1.3 servers MUST NOT
-offer a SHA-1 signed certificate unless no valid certificate chain can be
-produced without it (see {{server-certificate-selection}}).
+pairs in the supported_signature_algorithms vector).
+Endpoints negotiating use of TLS 1.3 MUST NOT trust any signature that uses
+any of the deprecated hash algorithms (MD5, SHA-1, & SHA-224) or send any
+certificate relying on any deprecated hash to its peer.
+(see {{server-certificate}})
 
 The signatures on certificates that are self-signed or certificates that are
 trust anchors are not validated since they begin a certification path (see
 {{RFC5280}}, Section 3.2).  A certificate that begins a certification
 path MAY use a hash or signature algorithm that is not advertised as being
-supported in the "signature_algorithms" extension.
+supported in the "signature_algorithms" extension. The use of deprecated
+hashes in these certificates is permitted but NOT RECOMMENDED.
 
 Note: TLS 1.3 servers might receive TLS 1.2 ClientHellos which do not contain
 this extension. If those servers are willing to negotiate TLS 1.2, they MUST
@@ -3262,16 +3272,25 @@ aspect of the certificate chain was unacceptable (e.g., it was not signed by a
 known, trusted CA), the server MAY at its discretion either continue the
 handshake (considering the client unauthenticated) or send a fatal alert.
 
-Any endpoint receiving any certificate signed using any signature algorithm
-using an MD5 hash MUST send a "bad_certificate" alert message and close
-the connection.
+Any endpoint validating any certificate signed using any signature algorithm
+with an MD5 hash MUST send a "bad_certificate" alert message and close
+the connection. (note that this is applicable only if the signature is to
+be validated, which is not always the case; see {{signature-algorithms}})
 
-SHA-1 is deprecated and therefore NOT RECOMMENDED.
-Endpoints that reject certification paths due to use of a deprecated hash MUST send
-a fatal "bad_certificate" alert message before closing the connection.
-All endpoints are RECOMMENDED to transition to SHA-256 or better as soon
-as possible to maintain interoperability with implementations
-currently in the process of phasing out SHA-1 support.
+If an endpoint cannot construct an acceptable chain using the provided
+certificates and decides to abort the handshake, then it MUST send a
+fatal alert message and close the connection. If the chain is untrustworthy
+because a certificate cannot be parsed correctly or due to use of a
+deprecated hash algorithm (MD5, SHA-1, & SHA-224), then it SHOULD produce
+a "bad_certificate" alert; otherwise it MUST produce an
+"unsupported_certificate" alert.
+
+Servers supporting both TLS 1.2 and TLS 1.3 MAY negotiate TLS 1.2 with
+support for SHA-1 hashes, however servers MUST NOT downgrade to use an
+older version in response to a TLS 1.3 client offering support for only
+deprecated or unsupported hashes. All clients offering TLS 1.3 are REQUIRED
+to offer support for at least one hash/signature pair which is not deprecated
+(see {{signature-algorithms}}).
 
 Note that a certificate containing a key for one signature algorithm
 MAY be signed using a different signature algorithm (for instance,
@@ -4148,6 +4167,9 @@ TLS protocol issues:
   attempts to use these obsolete capabilities fail correctly?
   (see {{backward-compatibility}})
 
+-  Have you ensured that certificate chains using SHA-1 or SHA-224
+  are only used with TLS 1.2 or older, or are prohibited completely?
+
 -  Do you handle TLS extensions in ClientHello correctly, including
   omitting the extensions field completely?
 
@@ -4155,6 +4177,11 @@ TLS protocol issues:
   suitable certificate is available, do you correctly send an empty
   Certificate message, instead of omitting the whole message (see
   {{client-certificate-selection}})?
+
+-  When the client has requested a server certificate, but no
+  suitable certificate chain is available, do you correctly send a
+  valid fallback chain using whatever TLS 1.3 permitted algorithms
+  are necessary, instead of immediately aborting the connection?
 
 - When processing the plaintext fragment produced by AEAD-Decrypt and
   scanning from the end for the ContentType, do you avoid scanning
